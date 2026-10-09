@@ -658,7 +658,7 @@ function ResultChat() {
   const currentRequestIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const handledTaskIdsRef = useRef<Set<string>>(new Set());
-  const handleTaskSubmitRef = useRef<(text: string) => Promise<void>>(() => Promise.resolve());
+  const handleTaskSubmitRef = useRef<(text: string, options?: { forceNewChat?: boolean; conversationId?: string }) => Promise<void>>(() => Promise.resolve());
 
   const refreshConversations = async () => {
     if (window.companion?.listConversations) {
@@ -710,7 +710,8 @@ function ResultChat() {
               messages: persistable.map((m, idx) => ({
                 id: "msg-" + idx,
                 role: m.role,
-                text: m.text,
+                text: m.text || "",
+                content: m.text || "",
                 sources: m.sources,
                 timestamp: Date.now()
               }))
@@ -731,6 +732,17 @@ function ResultChat() {
 
     const initData = async () => {
       try {
+        // 0. If a new task from companion is pending, start fresh chat directly
+        const pending = window.companion?.getPendingTask
+          ? await window.companion.getPendingTask()
+          : null;
+        if (!mounted) return;
+
+        if (pending && pending.text && !handledTaskIdsRef.current.has(pending.taskId)) {
+          processIncomingTask(pending);
+          return;
+        }
+
         // 1. Check if window was opened with result data
         const data = window.companion?.getResultData
           ? await window.companion.getResultData()
@@ -761,11 +773,14 @@ function ResultChat() {
           if (mounted && conv && conv.messages && conv.messages.length > 0) {
             conversationIdRef.current = conv.id;
             setConversationId(conv.id);
-            const msgs: ChatMessage[] = conv.messages.map((m) => ({
-              role: (m.role === "assistant" ? "luna" : m.role) as "user" | "luna",
-              text: m.text,
-              sources: m.sources
-            }));
+            const msgs: ChatMessage[] = conv.messages.map((m) => {
+              const textVal = m.text || (m as any).content || "";
+              return {
+                role: (m.role === "assistant" ? "luna" : m.role) as "user" | "luna",
+                text: textVal,
+                sources: m.sources
+              };
+            });
             setMessages(msgs);
             const lastLuna = msgs.slice().reverse().find((m) => m.role === "luna");
             const lastUser = msgs.slice().reverse().find((m) => m.role === "user");
@@ -791,11 +806,14 @@ function ResultChat() {
             if (mounted && conv) {
               conversationIdRef.current = conv.id;
               setConversationId(conv.id);
-              const msgs: ChatMessage[] = conv.messages.map((m) => ({
-                role: (m.role === "assistant" ? "luna" : m.role) as "user" | "luna",
-                text: m.text,
-                sources: m.sources
-              }));
+              const msgs: ChatMessage[] = conv.messages.map((m) => {
+                const textVal = m.text || (m as any).content || "";
+                return {
+                  role: (m.role === "assistant" ? "luna" : m.role) as "user" | "luna",
+                  text: textVal,
+                  sources: m.sources
+                };
+              });
               setMessages(msgs);
               await refreshConversations();
               return;
@@ -815,7 +833,7 @@ function ResultChat() {
       }
     };
 
-    const processIncomingTask = (incoming: { taskId: string; text: string }) => {
+    const processIncomingTask = (incoming: { taskId: string; text: string; conversationId?: string }) => {
       if (!incoming || !incoming.text || !incoming.taskId) return;
       if (handledTaskIdsRef.current.has(incoming.taskId)) return;
       handledTaskIdsRef.current.add(incoming.taskId);
@@ -824,7 +842,7 @@ function ResultChat() {
         window.companion.clearPendingTask(incoming.taskId);
       }
 
-      handleTaskSubmitRef.current(incoming.text);
+      handleTaskSubmitRef.current(incoming.text, { forceNewChat: true, conversationId: incoming.conversationId });
     };
 
     initData().then(() => {
@@ -840,7 +858,7 @@ function ResultChat() {
 
     refreshConversations();
 
-    const unsubTask = window.companion?.onTaskDispatched?.((incoming) => {
+    const unsubTask = window.companion?.onTaskDispatched?.((incoming: any) => {
       if (!mounted || !incoming) return;
       processIncomingTask(incoming);
     });
@@ -967,11 +985,14 @@ function ResultChat() {
       if (conv) {
         conversationIdRef.current = conv.id;
         setConversationId(conv.id);
-        const msgs: ChatMessage[] = conv.messages.map((m) => ({
-          role: (m.role === "assistant" ? "luna" : m.role) as "user" | "luna",
-          text: m.text,
-          sources: m.sources
-        }));
+        const msgs: ChatMessage[] = conv.messages.map((m) => {
+          const textVal = m.text || (m as any).content || "";
+          return {
+            role: (m.role === "assistant" ? "luna" : m.role) as "user" | "luna",
+            text: textVal,
+            sources: m.sources
+          };
+        });
         setMessages(msgs);
         const lastLuna = msgs.slice().reverse().find((m) => m.role === "luna");
         const lastUser = msgs.slice().reverse().find((m) => m.role === "user");
@@ -1113,59 +1134,75 @@ function ResultChat() {
     }
   };
 
-  const handleTaskSubmit = async (taskText: string) => {
+  const handleTaskSubmit = async (taskText: string, options?: { forceNewChat?: boolean; conversationId?: string }) => {
     const cleaned = taskText.trim();
     if (!cleaned || sending) {
       return;
     }
 
-    let activeId = conversationIdRef.current;
+    let activeId = options?.conversationId || (options?.forceNewChat ? null : conversationIdRef.current);
     if (!activeId) {
       activeId = "conv-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
-      conversationIdRef.current = activeId;
-      setConversationId(activeId);
-      if (window.companion?.setActiveConversationId) {
-        await window.companion.setActiveConversationId(activeId);
-      }
+    }
+    conversationIdRef.current = activeId;
+    setConversationId(activeId);
+    if (window.companion?.setActiveConversationId) {
+      await window.companion.setActiveConversationId(activeId);
     }
 
     const reqId = "req-" + Date.now();
     currentRequestIdRef.current = reqId;
 
-    // Isolate context strictly to the active conversation's messages
-    const conversationContext = messages
-      .filter((m) => {
-        if (!m.text || m.text === "Thinking...") return false;
-        if (
-          m.role === "luna" &&
-          (m.text.startsWith("Luna couldn't complete") ||
-            m.text.startsWith("Google API Error") ||
-            m.text.startsWith("Something went wrong") ||
-            m.text.startsWith("Sorry, Luna couldn't") ||
-            m.text.startsWith("Luna encountered an error"))
-        ) {
-          return false;
-        }
-        return true;
-      })
-      .map((m) => ({
-        role: m.role,
-        text: m.text
-      }));
+    // Isolate context: brand new chat starts with empty context; follow-ups use active chat context
+    const conversationContext = options?.forceNewChat
+      ? []
+      : messages
+          .filter((m) => {
+            if (!m.text || m.text === "Thinking...") return false;
+            if (
+              m.role === "luna" &&
+              (m.text.startsWith("Luna couldn't complete") ||
+                m.text.startsWith("Google API Error") ||
+                m.text.startsWith("Something went wrong") ||
+                m.text.startsWith("Sorry, Luna couldn't") ||
+                m.text.startsWith("Luna encountered an error"))
+            ) {
+              return false;
+            }
+            return true;
+          })
+          .map((m) => ({
+            role: m.role,
+            text: m.text
+          }));
 
     setSending(true);
 
-    setMessages((previous) => [
-      ...previous,
-      {
-        role: "user",
-        text: cleaned
-      },
-      {
-        role: "luna",
-        text: "Thinking..."
-      }
-    ]);
+    if (options?.forceNewChat) {
+      setResult(null);
+      setMessages([
+        {
+          role: "user",
+          text: cleaned
+        },
+        {
+          role: "luna",
+          text: "Thinking..."
+        }
+      ]);
+    } else {
+      setMessages((previous) => [
+        ...previous,
+        {
+          role: "user",
+          text: cleaned
+        },
+        {
+          role: "luna",
+          text: "Thinking..."
+        }
+      ]);
+    }
 
     try {
       const response = await window.companion.runGemmaTask(cleaned, {
@@ -1322,7 +1359,10 @@ function ResultChat() {
               fontWeight: 600,
               cursor: "pointer"
             }}
-            onClick={() => window.companion.newTaskFromResult()}
+            onClick={async () => {
+              await handleNewChat();
+              window.companion?.newTaskFromResult?.();
+            }}
             title="Close chat and assign a new task to Luna"
           >
             ➕ New Task
@@ -2032,6 +2072,9 @@ function Companion() {
         setTaskStatus("working");
         setState("working");
         window.companion.setState("working");
+        if ((res as any)?.conversationId) {
+          lastAssignedConversationIdRef.current = (res as any).conversationId;
+        }
       } else {
         setTaskError(res?.error || "Failed to deliver task to chat workspace.");
       }

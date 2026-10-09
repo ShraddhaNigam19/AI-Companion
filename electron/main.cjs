@@ -1023,8 +1023,15 @@ ipcMain.handle("companion:submit-task", async (_event, taskText) => {
   }
 
   const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const conversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  // Every new task submitted from the companion starts a fresh new chat
+  currentResult = null;
+  conversationStore.setActiveConversationId(app.getPath("userData"), conversationId);
+
   pendingCompanionTask = {
     taskId,
+    conversationId,
     text: cleaned,
     timestamp: Date.now()
   };
@@ -1037,6 +1044,7 @@ ipcMain.handle("companion:submit-task", async (_event, taskText) => {
     if (window && !window.isDestroyed()) {
       window.webContents.send("companion:dispatch-task", {
         taskId,
+        conversationId,
         text: cleaned
       });
     }
@@ -1050,7 +1058,7 @@ ipcMain.handle("companion:submit-task", async (_event, taskText) => {
     dispatch();
   }
 
-  return { success: true, taskId };
+  return { success: true, taskId, conversationId };
 });
 
 ipcMain.handle("companion:get-pending-task", () => {
@@ -1423,6 +1431,8 @@ ipcMain.on(
   "new-task-from-result",
   () => {
     currentResult = null;
+    const freshId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    conversationStore.setActiveConversationId(app.getPath("userData"), freshId);
 
     if (
       resultWindow &&

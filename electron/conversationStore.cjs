@@ -44,10 +44,25 @@ function readStore(userDataDir) {
       if (raw && raw.trim()) {
         const parsed = JSON.parse(raw);
         if (parsed && Array.isArray(parsed.conversations)) {
+          const normalized = parsed.conversations.map((conv) => {
+            if (Array.isArray(conv.messages)) {
+              conv.messages = conv.messages.map((m, idx) => {
+                const textVal = m.text || m.content || "";
+                return {
+                  ...m,
+                  id: m.id || m.messageId || `msg-${idx}`,
+                  messageId: m.messageId || m.id || `msg-${idx}`,
+                  text: textVal,
+                  content: textVal
+                };
+              });
+            }
+            return conv;
+          });
           return {
             version: parsed.version || STORE_VERSION,
             activeConversationId: parsed.activeConversationId || null,
-            conversations: parsed.conversations
+            conversations: normalized
           };
         }
       }
@@ -168,11 +183,25 @@ function saveConversation(userDataDir, conversation) {
     }
   }
 
+  const normalizedMessages = Array.isArray(conversation.messages)
+    ? conversation.messages.map((m, idx) => {
+        const textVal = m.text || m.content || "";
+        return {
+          ...m,
+          id: m.id || m.messageId || `msg-${idx}`,
+          messageId: m.messageId || m.id || `msg-${idx}`,
+          text: textVal,
+          content: textVal
+        };
+      })
+    : [];
+
   const updatedRecord = {
     ...conversation,
     id: convId,
     conversationId: convId,
     title: title || "New Conversation",
+    messages: normalizedMessages,
     updatedAt: now
   };
 
